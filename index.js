@@ -140,6 +140,7 @@ if (program.diff) {
 }
 else if (program.conflicts) {
   const fileNames = getFiles('tmp/diff').filter(file => !file.includes('conflicts.json'));
+  const weakConflicts = ['package.json', 'package-lock.json', 'now.eslintignore', '.eslintignore'];
   const conflicts = [];
   Promise.map(fileNames, fileName => fs.readJson(fileName).then(data => [fileName, data]))
     .then((data) => {
@@ -163,7 +164,9 @@ else if (program.conflicts) {
           }
           const onlyFiles = Object.values(contents.changes).map(obj => obj.file);
           const onlyFilesCompare = Object.values(contentsCompare.changes).map(obj => obj.file);
-          const intersections = onlyFiles.filter(changed => onlyFilesCompare.includes(changed));
+          const intersections = onlyFiles
+            .filter(changed => onlyFilesCompare.includes(changed))
+            .filter(changed=>!weakConflicts.includes(changed));
           if (intersections.length) {
             conflicts.push({
               task1: task,
