@@ -74,7 +74,7 @@ function fetchDiffs() {
       debug(`Fetched all branches, checking diff`);
       return Promise.map(branches, (branch) => {
         const getData = spawnPromise('git', ['diff', '--name-status', `origin/${branch}..origin/master`], {cwd: TMPDIR});
-        const getAuthor = spawnPromise('git', ['log', `origin/${branch}`, '-1', '--pretty=format:\'%an\''], {cwd: TMPDIR});
+        const getAuthor = spawnPromise('git', ['log', `origin/${branch}`, '-1', '--pretty=format:%an'], {cwd: TMPDIR});
         return Promise.all([getData, getAuthor])
           .then(([res, author]) => {
             const data = res
