@@ -12,15 +12,15 @@ const log = {
   info: debug('predict:info'),
 };
 
-function spawnPromise(program, args, options) {
+function spawnPromise(program2, args, options) {
 
-  const display = `Running ${program} ${args.join(' ')}`;
+  const display = `Running ${program2} ${args.join(' ')}`;
   log.info(display);
   return new Promise((resolve, reject) => {
 
-    let data = [];
-    let err = [];
-    const ps = spawn(program, args, options);
+    const data = [];
+    const err = [];
+    const ps = spawn(program2, args, options);
     ps.stdout.on('data', (newData) => {
       data.push(newData);
     });
@@ -36,7 +36,7 @@ function spawnPromise(program, args, options) {
       }
       resolve(data.join(''));
     });
-  })
+  });
 }
 
 program
@@ -56,13 +56,13 @@ function fetchDiffs() {
     .then(() => fs.pathExists(program.path))
     .then((exists) => {
       if (!exists) {
-        throw new Error(`Path ${program.path} does not exist!`)
+        throw new Error(`Path ${program.path} does not exist!`);
       }
     })
     .then(() => fs.pathExists(gitPath))
     .then((exists) => {
       if (!exists) {
-        throw new Error(`${gitPath} is not a git repo!`)
+        throw new Error(`${gitPath} is not a git repo!`);
       }
     })
     .then(() => fs.copy(gitPath, TMPDIR))
@@ -72,8 +72,8 @@ function fetchDiffs() {
     .then((data) => {
       const branches = data
         .split('\n')
-        .map((line) => line.split('refs/heads/')[1])
-        .filter((branchName) => branchName);
+        .map(line => line.split('refs/heads/')[1])
+        .filter(branchName => branchName && !branchName.includes('release'));
       log.info(`Remote data: ${JSON.stringify(branches, null, 3)}`);
       log.info(`Fetching ${branches.length} remote branches...`);
       return Promise.map(branches, (branch) => {
@@ -82,7 +82,7 @@ function fetchDiffs() {
         .then(() => branches);
     })
     .then((branches) => {
-      log.info(`Pulling master to remote branches...`);
+      log.info('Pulling master to remote branches...');
       const branchesMasterConflict = [];
 
       return spawnPromise('git', ['reset', '--hard', 'HEAD'], {cwd: 'tmp'})
@@ -93,35 +93,35 @@ function fetchDiffs() {
               log.error(`Error: ${err}`);
               branchesMasterConflict.push(branch);
               return spawnPromise('git', ['checkout', '-f', branch], {cwd: 'tmp'});
-            })
+            });
         }, {concurrency: 1})
-          .then(() => [branches, branchesMasterConflict]))
+          .then(() => [branches, branchesMasterConflict]));
     })
     .then(([branches, branchesMasterConflict]) => {
       log.info(`${branchesMasterConflict.length}/${branches.length} branches in conflict with master:`);
       log.info(`${branchesMasterConflict.join('\n')}`);
-      return branches.filter((branch) => !branchesMasterConflict.includes(branch));
+      return branches.filter(branch => !branchesMasterConflict.includes(branch));
     })
     .then((branches) => {
-      log.info(`Fetched all branches, checking diff`);
+      log.info('Fetched all branches, checking diff');
       return Promise.map(branches, (branch) => {
         const getData = spawnPromise('git', ['diff', '--name-status', `${branch}..master`], {cwd: 'tmp'});
-        const getAuthor = spawnPromise('git', ['log', `origin/${branch}`, '-1', '--pretty=format:%an'], {cwd: TMPDIR});
+        const getAuthor = spawnPromise('git', ['log', `origin/${branch}`, '-1', '--pretty=format:%an %ae'], {cwd: TMPDIR});
         return Promise.all([getData, getAuthor])
           .then(([res, author]) => {
             const data = res
               .split('\n')
-              .filter((line) => !!line.trim())
+              .filter(line => !!line.trim())
               .map((line) => {
-                const data = line.split('\t');
-                return {action: data[0], file: data[1]};
+                const data2 = line.split('\t');
+                return {action: data2[0], file: data2[1]};
               });
             const fileData = {changes: data, author};
             const file = `tmp/diff/${branch}.json`;
             return fs.ensureDir('tmp/diff')
               .then(() => fs.writeFile(file, JSON.stringify(fileData, null, 3)));
-          })
-      })
+          });
+      });
     })
     .then(() => {
       log.error('Got all diffs!');
@@ -132,47 +132,51 @@ function fetchDiffs() {
 }
 
 function getFiles(source) {
-  return readdirSync(source).map(name => join(source, name)).filter((file) => lstatSync(file).isFile());
+  return readdirSync(source).map(name => join(source, name)).filter(file => lstatSync(file).isFile());
 }
 
 if (program.diff) {
   fetchDiffs();
 }
 else if (program.conflicts) {
-  const fileNames = getFiles('tmp/diff');
+  const fileNames = getFiles('tmp/diff').filter(file => !file.includes('conflicts.json'));
   const conflicts = [];
-  Promise.map(fileNames, (fileName) => fs.readJson(fileName).then((data)=>[fileName, data]))
+  Promise.map(fileNames, fileName => fs.readJson(fileName).then(data => [fileName, data]))
     .then((data) => {
       data.forEach((element, index) => {
         const [filename, contents] = element;
-        const task = filename.replace('.json', '').replace('/tmp/diff', '');
+        const task = filename.replace('.json', '').replace('tmp/diff/', '');
         data.forEach((elementCompare, indexCompare) => {
           if (index === indexCompare) {
             return;
           }
           const [filenameCompare, contentsCompare] = elementCompare;
-          const taskCompare = filenameCompare.replace('.json', '').replace('/tmp/diff', '');
-          if (conflicts.some((conflict) => conflict.task1 === taskCompare && conflict.task2 === task)) {
-            return; //avoid duplication
+          const taskCompare = filenameCompare.replace('.json', '').replace('tmp/diff/', '');
+          if (conflicts.some(conflict => conflict.task1 === taskCompare && conflict.task2 === task)) {
+            return; // avoid duplication
           }
-          if (contents.changes===undefined) {
-            log.error(`WTF? ${JSON.stringify(contents)}`);
-            return;
+          if (contents.changes === undefined) {
+            log.e(`WTF? ${JSON.stringify(contents)}`);
           }
-          if (contentsCompare.changes===undefined) {
-            log.error(`WTFCOMPARE? ${JSON.stringify(contentsCompare)}`);
-            return;
+          if (contentsCompare.changes === undefined) {
+            log.e(`WTFCOMPARE? ${JSON.stringify(contentsCompare)}`);
           }
-          const onlyFiles = Object.values(contents.changes).map((obj) => obj.file);
-          const onlyFilesCompare = Object.values(contentsCompare.changes).map((obj) => obj.file);
-          const intersections = onlyFiles.filter((changed) => onlyFilesCompare.includes(changed));
+          const onlyFiles = Object.values(contents.changes).map(obj => obj.file);
+          const onlyFilesCompare = Object.values(contentsCompare.changes).map(obj => obj.file);
+          const intersections = onlyFiles.filter(changed => onlyFilesCompare.includes(changed));
           if (intersections.length) {
-            conflicts.push({task1: task, task2: taskCompare, files: intersections});
+            conflicts.push({
+              task1: task,
+              task2: taskCompare,
+              files: intersections,
+              author1: contents.author,
+              author2: contentsCompare.author,
+            });
           }
         });
       });
       return fs.writeFile('tmp/diff/conflicts.json', JSON.stringify(conflicts, null, 3));
-    })
+    });
 }
 else {
   throw new Error('No options provided!');
