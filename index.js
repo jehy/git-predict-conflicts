@@ -39,6 +39,19 @@ function spawnPromise(program2, args, options) {
   });
 }
 
+function sortByString(a, b) {
+  if (!a || !b) {
+    throw new Error('Arg falsy!');
+  }
+  if (a === b) {
+    return 0;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return -1;
+}
+
 program
   .version('0.1.0')
   .option('-p, --path <path>', 'Git path for your repo')
@@ -113,7 +126,8 @@ function fetchDiffs() {
       log.info(`${branchesMasterConflict.length}/${branches.length} branches in conflict with master:`);
       log.info(`${branchesMasterConflict.join('\n')}`);
       const noConflict = branches.filter(branch => !branchesMasterConflict.includes(branch));
-      return fs.writeFile(`${TMPDIR}/master_conflicts.json`, JSON.stringify(branchesMasterConflict, null, 3))
+      const sorted = branchesMasterConflict.sort();
+      return fs.writeFile(`${TMPDIR}/master_conflicts.json`, JSON.stringify(sorted, null, 3))
         .then(() => noConflict);
     })
     .then((branches) => {
@@ -138,7 +152,7 @@ function fetchDiffs() {
       });
     })
     .then(() => {
-      log.error('Got all diffs!');
+      log.info('Got all diffs!');
     })
     .catch((err) => {
       throw err;
@@ -150,7 +164,7 @@ function getFiles(source) {
 }
 
 function genConflicts() {
-  const fileNames = getFiles(`${TMPDIR}/diff/`);
+  const fileNames = getFiles(`${TMPDIR}/diff/`).sort();
   const weakConflicts = ['package.json', 'package-lock.json', 'now.eslintignore', '.eslintignore'];
   const intersections = [];
   Promise.map(fileNames, fileName => fs.readJson(fileName).then(data => [fileName, data]))
@@ -191,7 +205,10 @@ function genConflicts() {
           }
         });
       });
-      return fs.writeFile(`${TMPDIR}/intersections.json`, JSON.stringify(intersections, null, 3));
+      const sorted = intersections.sort((c1, c2) => {
+        return sortByString(c1.branch1, c2.branch1);
+      });
+      return fs.writeFile(`${TMPDIR}/intersections.json`, JSON.stringify(sorted, null, 3));
     })
     .then(() => {
       return Promise.reduce(intersections, (res, intersection) => {
@@ -202,8 +219,21 @@ function genConflicts() {
                 return spawnPromise('git', ['pull', '.', intersection.branch2], {cwd: TMPDATADIR})
                   .catch((err) => {
                     log.error(`Error: ${err}`);
-                    res.push(intersection);
-                    return spawnPromise('git', ['checkout', '-f', intersection.branch1], {cwd: TMPDATADIR});
+                    return spawnPromise('git', ['diff', '--name-only', '--diff-filter=U'], {cwd: TMPDATADIR})
+                      .then((data) => {
+                        const conflictFiles = data
+                          .split('\n')
+                          .map(file => file.trim())
+                          .filter(file => !!file)
+                          .filter(file => !weakConflicts.includes(file));
+                        if (conflictFiles.length) {
+                          intersection.files = conflictFiles;
+                          res.push(intersection);
+                        }
+                        else {
+                          log.info('conflicts are okay');
+                        }
+                      }).then(() => spawnPromise('git', ['checkout', '-f', intersection.branch1], {cwd: TMPDATADIR}));
                   })
                   .then(() => {
                     return spawnPromise('git', ['reset', '--hard', rememberLastCommit], {cwd: TMPDATADIR})
@@ -214,7 +244,11 @@ function genConflicts() {
       }, []);
     })
     .then((conflicts) => {
-      return fs.writeFile(`${TMPDIR}/conflicts.json`, JSON.stringify(conflicts, null, 3));
+      const sorted = conflicts.sort((c1, c2) => {
+        return sortByString(c1.branch1, c2.branch1);
+      });
+      return fs.writeFile(`${TMPDIR}/conflicts.json`, JSON.stringify(sorted, null, 3))
+        .then(() => log.info('conflict file written'));
     })
     .catch((err) => {
       throw err;
