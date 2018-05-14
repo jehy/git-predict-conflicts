@@ -77,9 +77,11 @@ function fetchDiffs() {
         .filter(branchName => branchName && !branchName.includes('release'));
       log.info(`Remote data: ${JSON.stringify(branches, null, 3)}`);
       log.info(`Fetching ${branches.length} remote branches...`);
-      return Promise.map(branches, (branch) => {
+      /* return Promise.map(branches, (branch) => {
         return spawnPromise('git', ['fetch', 'origin', branch], {cwd: TMPGITDIR});
       })
+        .then(() => branches); */
+      return spawnPromise('git', ['fetch'], {cwd: TMPGITDIR})
         .then(() => branches);
     })
     .then((branches) => {
