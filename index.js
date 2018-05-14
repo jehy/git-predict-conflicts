@@ -149,10 +149,7 @@ function getFiles(source) {
   return readdirSync(source).map(name => join(source, name)).filter(file => lstatSync(file).isFile());
 }
 
-if (program.diff) {
-  fetchDiffs();
-}
-else if (program.conflicts) {
+function genConflicts() {
   const fileNames = getFiles(`${TMPDIR}/diff/`);
   const weakConflicts = ['package.json', 'package-lock.json', 'now.eslintignore', '.eslintignore'];
   const intersections = [];
@@ -222,6 +219,13 @@ else if (program.conflicts) {
     .catch((err) => {
       throw err;
     });
+}
+
+if (program.diff) {
+  fetchDiffs();
+}
+else if (program.conflicts) {
+  genConflicts();
 }
 else {
   throw new Error('No options provided!');
