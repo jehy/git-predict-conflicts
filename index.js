@@ -47,27 +47,28 @@ program
   .parse(process.argv);
 
 // console.log(JSON.stringify(program, null, 3));
-const TMPDIR = 'tmp/.git';
-const gitPath = path.join(program.path, '.git');
+const TMPDIR = 'tmp';
+const TMPGITDIR = `${TMPDIR}/.git`;
+const checkGitPath = path.join(program.path, '.git');
 
 function fetchDiffs() {
-  return fs.remove('tmp')
-    .then(() => fs.ensureDir(TMPDIR))
+  return fs.remove(TMPDIR)
+    .then(() => fs.ensureDir(TMPGITDIR))
     .then(() => fs.pathExists(program.path))
     .then((exists) => {
       if (!exists) {
         throw new Error(`Path ${program.path} does not exist!`);
       }
     })
-    .then(() => fs.pathExists(gitPath))
+    .then(() => fs.pathExists(checkGitPath))
     .then((exists) => {
       if (!exists) {
-        throw new Error(`${gitPath} is not a git repo!`);
+        throw new Error(`${checkGitPath} is not a git repo!`);
       }
     })
-    .then(() => fs.copy(gitPath, TMPDIR))
+    .then(() => fs.copy(checkGitPath, TMPGITDIR))
     .then(() => {
-      return spawnPromise('git', ['ls-remote', '--heads', 'origin'], {cwd: TMPDIR});
+      return spawnPromise('git', ['ls-remote', '--heads', 'origin'], {cwd: TMPGITDIR});
     })
     .then((data) => {
       const branches = data
@@ -77,7 +78,7 @@ function fetchDiffs() {
       log.info(`Remote data: ${JSON.stringify(branches, null, 3)}`);
       log.info(`Fetching ${branches.length} remote branches...`);
       return Promise.map(branches, (branch) => {
-        return spawnPromise('git', ['fetch', 'origin', branch], {cwd: TMPDIR});
+        return spawnPromise('git', ['fetch', 'origin', branch], {cwd: TMPGITDIR});
       })
         .then(() => branches);
     })
@@ -85,14 +86,14 @@ function fetchDiffs() {
       log.info('Pulling master to remote branches...');
       const branchesMasterConflict = [];
 
-      return spawnPromise('git', ['reset', '--hard', 'HEAD'], {cwd: 'tmp'})
+      return spawnPromise('git', ['reset', '--hard', 'HEAD'], {cwd: TMPDIR})
         .then(() => Promise.map(branches, (branch) => {
-          return spawnPromise('git', ['checkout', branch], {cwd: 'tmp'})
-            .then(() => spawnPromise('git', ['pull', '.', 'master'], {cwd: 'tmp'}))
+          return spawnPromise('git', ['checkout', branch], {cwd: TMPDIR})
+            .then(() => spawnPromise('git', ['pull', '.', 'master'], {cwd: TMPDIR}))
             .catch((err) => {
               log.error(`Error: ${err}`);
               branchesMasterConflict.push(branch);
-              return spawnPromise('git', ['checkout', '-f', branch], {cwd: 'tmp'});
+              return spawnPromise('git', ['checkout', '-f', branch], {cwd: TMPDIR});
             });
         }, {concurrency: 1})
           .then(() => [branches, branchesMasterConflict]));
@@ -105,8 +106,8 @@ function fetchDiffs() {
     .then((branches) => {
       log.info('Fetched all branches, checking diff');
       return Promise.map(branches, (branch) => {
-        const getData = spawnPromise('git', ['diff', '--name-status', `${branch}..master`], {cwd: 'tmp'});
-        const getAuthor = spawnPromise('git', ['log', `origin/${branch}`, '-1', '--pretty=format:%an %ae'], {cwd: TMPDIR});
+        const getData = spawnPromise('git', ['diff', '--name-status', `${branch}..master`], {cwd: TMPDIR});
+        const getAuthor = spawnPromise('git', ['log', `origin/${branch}`, '-1', '--pretty=format:%an %ae'], {cwd: TMPGITDIR});
         return Promise.all([getData, getAuthor])
           .then(([res, author]) => {
             const data = res
@@ -117,8 +118,8 @@ function fetchDiffs() {
                 return {action: data2[0], file: data2[1]};
               });
             const fileData = {changes: data, author};
-            const file = `tmp/diff/${branch}.json`;
-            return fs.ensureDir('tmp/diff')
+            const file = `${TMPDIR}/diff/${branch}.json`;
+            return fs.ensureDir(`${TMPDIR}/diff`)
               .then(() => fs.writeFile(file, JSON.stringify(fileData, null, 3)));
           });
       });
@@ -141,19 +142,19 @@ if (program.diff) {
 else if (program.conflicts) {
   const fileNames = getFiles('tmp/diff').filter(file => !file.includes('conflicts.json'));
   const weakConflicts = ['package.json', 'package-lock.json', 'now.eslintignore', '.eslintignore'];
-  const conflicts = [];
+  const intersections = [];
   Promise.map(fileNames, fileName => fs.readJson(fileName).then(data => [fileName, data]))
     .then((data) => {
       data.forEach((element, index) => {
         const [filename, contents] = element;
-        const task = filename.replace('.json', '').replace('tmp/diff/', '');
+        const branch = filename.replace('.json', '').replace(`${TMPDIR}/diff/`, '');
         data.forEach((elementCompare, indexCompare) => {
           if (index === indexCompare) {
             return;
           }
           const [filenameCompare, contentsCompare] = elementCompare;
-          const taskCompare = filenameCompare.replace('.json', '').replace('tmp/diff/', '');
-          if (conflicts.some(conflict => conflict.task1 === taskCompare && conflict.task2 === task)) {
+          const branchCompare = filenameCompare.replace('.json', '').replace(`${TMPDIR}/diff/`, '');
+          if (intersections.some(conflict => conflict.branch1 === branchCompare && conflict.branch2 === branch)) {
             return; // avoid duplication
           }
           if (contents.changes === undefined) {
@@ -164,21 +165,46 @@ else if (program.conflicts) {
           }
           const onlyFiles = Object.values(contents.changes).map(obj => obj.file);
           const onlyFilesCompare = Object.values(contentsCompare.changes).map(obj => obj.file);
-          const intersections = onlyFiles
+          const intersectionFiles = onlyFiles
             .filter(changed => onlyFilesCompare.includes(changed))
-            .filter(changed=>!weakConflicts.includes(changed));
-          if (intersections.length) {
-            conflicts.push({
-              task1: task,
-              task2: taskCompare,
-              files: intersections,
+            .filter(changed => !weakConflicts.includes(changed));
+          if (intersectionFiles.length) {
+            intersections.push({
+              branch1: branch,
+              branch2: branchCompare,
+              files: intersectionFiles,
               author1: contents.author,
               author2: contentsCompare.author,
             });
           }
         });
       });
-      return fs.writeFile('tmp/diff/conflicts.json', JSON.stringify(conflicts, null, 3));
+      return fs.writeFile(`${TMPDIR}/diff/intersections.json`, JSON.stringify(intersections, null, 3));
+    })
+    .then(() => {
+      return Promise.reduce(intersections, (res, intersection) => {
+        return spawnPromise('git', ['checkout', intersection.branch1], {cwd: TMPDIR})
+          .then(()=>{
+            spawnPromise('git', ['log', '--pretty=format:\'%H\'', '-n 1'], {cwd: TMPDIR})
+              .then((rememberLastCommit)=>{
+                return spawnPromise('git', ['pull', '.', intersection.branch2], {cwd: TMPDIR})
+                  .catch((err) => {
+                    log.error(`Error: ${err}`);
+                    res.push(intersection);
+                  })
+                  .then(()=>{
+                    return spawnPromise('git', ['reset', '--hard', rememberLastCommit], {cwd: TMPDIR});
+                  });
+              });
+          });
+      });
+    })
+    .then((conflicts)=>
+    {
+      return fs.writeFile(`${TMPDIR}/diff/conflicts.json`, JSON.stringify(conflicts, null, 3));
+    })
+    .catch((err) => {
+      throw err;
     });
 }
 else {
