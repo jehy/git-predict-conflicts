@@ -48,7 +48,8 @@ program
 
 // console.log(JSON.stringify(program, null, 3));
 const TMPDIR = 'tmp';
-const TMPGITDIR = `${TMPDIR}/.git`;
+const TMPDATADIR = `${TMPDIR}/repo`;
+const TMPGITDIR = `${TMPDATADIR}/.git`;
 const checkGitPath = path.join(program.path, '.git');
 
 function fetchDiffs() {
@@ -68,34 +69,42 @@ function fetchDiffs() {
     })
     .then(() => fs.copy(checkGitPath, TMPGITDIR))
     .then(() => {
-      return spawnPromise('git', ['ls-remote', '--heads', 'origin'], {cwd: TMPGITDIR});
+      return spawnPromise('git', ['fetch', '--all'], {cwd: TMPGITDIR})
+        .then(() => {
+          const remotes = spawnPromise('git', ['ls-remote', '--heads', 'origin'], {cwd: TMPGITDIR});
+          const merged = spawnPromise('git', ['branch', '--merged'], {cwd: TMPGITDIR})
+            .then(data => data
+              .split('\n')
+              .map((item => item.trim()))
+              .filter((item => !!item)));
+          return Promise.all([remotes, merged]);
+        });
     })
-    .then((data) => {
-      const branches = data
+    .then(([remotes, merged]) => {
+      return remotes
         .split('\n')
         .map(line => line.split('refs/heads/')[1])
-        .filter(branchName => branchName && !branchName.includes('release'));
-      log.info(`Remote data: ${JSON.stringify(branches, null, 3)}`);
-      log.info(`Fetching ${branches.length} remote branches...`);
+        .filter(branchName => branchName && !branchName.includes('release') && !merged.includes(branchName));
+      // log.info(`Remote data: ${JSON.stringify(branches, null, 3)}`);
+      // log.info(`Fetching ${branches.length} remote branches...`);
       /* return Promise.map(branches, (branch) => {
         return spawnPromise('git', ['fetch', 'origin', branch], {cwd: TMPGITDIR});
       })
         .then(() => branches); */
-      return spawnPromise('git', ['fetch'], {cwd: TMPGITDIR})
-        .then(() => branches);
+      // .then(() => branches);
     })
     .then((branches) => {
       log.info('Pulling master to remote branches...');
       const branchesMasterConflict = [];
 
-      return spawnPromise('git', ['reset', '--hard', 'HEAD'], {cwd: TMPDIR})
+      return spawnPromise('git', ['reset', '--hard', 'HEAD'], {cwd: TMPDATADIR})
         .then(() => Promise.map(branches, (branch) => {
-          return spawnPromise('git', ['checkout', branch], {cwd: TMPDIR})
-            .then(() => spawnPromise('git', ['pull', '.', 'master'], {cwd: TMPDIR}))
+          return spawnPromise('git', ['checkout', branch], {cwd: TMPDATADIR})
+            .then(() => spawnPromise('git', ['pull', '.', 'master'], {cwd: TMPDATADIR}))
             .catch((err) => {
               log.error(`Error: ${err}`);
               branchesMasterConflict.push(branch);
-              return spawnPromise('git', ['checkout', '-f', branch], {cwd: TMPDIR});
+              return spawnPromise('git', ['checkout', '-f', branch], {cwd: TMPDATADIR});
             });
         }, {concurrency: 1})
           .then(() => [branches, branchesMasterConflict]));
@@ -103,12 +112,14 @@ function fetchDiffs() {
     .then(([branches, branchesMasterConflict]) => {
       log.info(`${branchesMasterConflict.length}/${branches.length} branches in conflict with master:`);
       log.info(`${branchesMasterConflict.join('\n')}`);
-      return branches.filter(branch => !branchesMasterConflict.includes(branch));
+      const noConflict = branches.filter(branch => !branchesMasterConflict.includes(branch));
+      return fs.writeFile(`${TMPDIR}/master_conflicts.json`, JSON.stringify(branchesMasterConflict, null, 3))
+        .then(() => noConflict);
     })
     .then((branches) => {
       log.info('Fetched all branches, checking diff');
       return Promise.map(branches, (branch) => {
-        const getData = spawnPromise('git', ['diff', '--name-status', `${branch}..master`], {cwd: TMPDIR});
+        const getData = spawnPromise('git', ['diff', '--name-status', `${branch}..master`], {cwd: TMPDATADIR});
         const getAuthor = spawnPromise('git', ['log', `origin/${branch}`, '-1', '--pretty=format:%an %ae'], {cwd: TMPGITDIR});
         return Promise.all([getData, getAuthor])
           .then(([res, author]) => {
@@ -121,7 +132,7 @@ function fetchDiffs() {
               });
             const fileData = {changes: data, author};
             const file = `${TMPDIR}/diff/${branch}.json`;
-            return fs.ensureDir(`${TMPDIR}/diff`)
+            return fs.ensureDir(`${TMPDIR}/diff/`)
               .then(() => fs.writeFile(file, JSON.stringify(fileData, null, 3)));
           });
       });
@@ -142,7 +153,7 @@ if (program.diff) {
   fetchDiffs();
 }
 else if (program.conflicts) {
-  const fileNames = getFiles('tmp/diff').filter(file => !file.includes('conflicts.json'));
+  const fileNames = getFiles(`${TMPDIR}/diff/`);
   const weakConflicts = ['package.json', 'package-lock.json', 'now.eslintignore', '.eslintignore'];
   const intersections = [];
   Promise.map(fileNames, fileName => fs.readJson(fileName).then(data => [fileName, data]))
@@ -160,10 +171,12 @@ else if (program.conflicts) {
             return; // avoid duplication
           }
           if (contents.changes === undefined) {
-            log.e(`WTF? ${JSON.stringify(contents)}`);
+            log.error(`WTF? ${JSON.stringify(contents)}`);
+            process.exit(1);
           }
           if (contentsCompare.changes === undefined) {
-            log.e(`WTFCOMPARE? ${JSON.stringify(contentsCompare)}`);
+            log.error(`WTFCOMPARE? ${JSON.stringify(contentsCompare)}`);
+            process.exit(1);
           }
           const onlyFiles = Object.values(contents.changes).map(obj => obj.file);
           const onlyFilesCompare = Object.values(contentsCompare.changes).map(obj => obj.file);
@@ -181,29 +194,30 @@ else if (program.conflicts) {
           }
         });
       });
-      return fs.writeFile(`${TMPDIR}/diff/intersections.json`, JSON.stringify(intersections, null, 3));
+      return fs.writeFile(`${TMPDIR}/intersections.json`, JSON.stringify(intersections, null, 3));
     })
     .then(() => {
       return Promise.reduce(intersections, (res, intersection) => {
-        return spawnPromise('git', ['checkout', intersection.branch1], {cwd: TMPDIR})
-          .then(()=>{
-            spawnPromise('git', ['log', '--pretty=format:\'%H\'', '-n 1'], {cwd: TMPDIR})
-              .then((rememberLastCommit)=>{
-                return spawnPromise('git', ['pull', '.', intersection.branch2], {cwd: TMPDIR})
+        return spawnPromise('git', ['checkout', intersection.branch1], {cwd: TMPDATADIR})
+          .then(() => {
+            return spawnPromise('git', ['log', '--pretty=format:%H', '-n 1'], {cwd: TMPDATADIR})
+              .then((rememberLastCommit) => {
+                return spawnPromise('git', ['pull', '.', intersection.branch2], {cwd: TMPDATADIR})
                   .catch((err) => {
                     log.error(`Error: ${err}`);
                     res.push(intersection);
+                    return spawnPromise('git', ['checkout', '-f', intersection.branch1], {cwd: TMPDATADIR});
                   })
-                  .then(()=>{
-                    return spawnPromise('git', ['reset', '--hard', rememberLastCommit], {cwd: TMPDIR});
+                  .then(() => {
+                    return spawnPromise('git', ['reset', '--hard', rememberLastCommit], {cwd: TMPDATADIR})
+                      .then(() => res);
                   });
               });
           });
-      });
+      }, []);
     })
-    .then((conflicts)=>
-    {
-      return fs.writeFile(`${TMPDIR}/diff/conflicts.json`, JSON.stringify(conflicts, null, 3));
+    .then((conflicts) => {
+      return fs.writeFile(`${TMPDIR}/conflicts.json`, JSON.stringify(conflicts, null, 3));
     })
     .catch((err) => {
       throw err;
