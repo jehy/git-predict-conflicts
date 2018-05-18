@@ -163,7 +163,21 @@ function getFiles(source) {
   return readdirSync(source).map(name => join(source, name)).filter(file => lstatSync(file).isFile());
 }
 
+function genModifiedInActiveBranches() {
+  const fileNames = getFiles(`${TMPDIR}/diff/`).sort();
+  Promise.reduce(fileNames, (res, fileName) => {
+    return fs.readJson(fileName)
+      .then((data) => {
+        return res.concat(data.changes.map(obj=>obj.file));
+      });
+  }, [])
+    .then((files)=>{
+      const unique = files.filter((v, i, a) => a.indexOf(v) === i).sort();
+      return fs.writeFile(`${TMPDIR}/all_changes.json`, JSON.stringify(unique, null, 3));
+    });
+}
 function genConflicts() {
+  genModifiedInActiveBranches();
   const fileNames = getFiles(`${TMPDIR}/diff/`).sort();
   const weakConflicts = ['package.json', 'package-lock.json', 'now.eslintignore', '.eslintignore'];
   const intersections = [];
